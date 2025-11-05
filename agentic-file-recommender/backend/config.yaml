@@ -1,0 +1,12 @@
+scan:
+  default_roots: ["C:/Users/Public/Documents"]
+  snippet_bytes: 8192
+  allowed_exts: [".txt", ".md", ".py", ".json", ".csv", ".pdf"]
+embeddings:
+  model_name: "all-MiniLM-L6-v2"
+  dim: 384
+ranking:
+  alpha: 0.6
+  beta: 0.2
+  gamma: 0.15
+  delta: 0.05

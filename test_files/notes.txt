@@ -1,0 +1,5 @@
+
+Important notes about Python programming:
+- Functions are first-class objects
+- Indentation matters
+- Python is dynamically typed

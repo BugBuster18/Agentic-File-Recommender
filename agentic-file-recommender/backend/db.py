@@ -42,69 +42,94 @@ def is_db_initialized() -> bool:
 
 def ensure_tables():
     """Ensure all required tables exist."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.executescript("""
-            -- Activity tracking tables
-            CREATE TABLE IF NOT EXISTS file_activity (
-                file_id INTEGER PRIMARY KEY,
-                last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
-                access_count INTEGER DEFAULT 0,
-                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
-            );
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.executescript("""
+                -- Activity tracking tables
+                CREATE TABLE IF NOT EXISTS file_activity (
+                    file_id INTEGER PRIMARY KEY,
+                    last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    access_count INTEGER DEFAULT 0,
+                    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+                );
 
-            CREATE TABLE IF NOT EXISTS file_cooccurrence (
-                file_id_1 INTEGER,
-                file_id_2 INTEGER,
-                co_count INTEGER DEFAULT 0,
-                PRIMARY KEY (file_id_1, file_id_2),
-                FOREIGN KEY(file_id_1) REFERENCES files(id),
-                FOREIGN KEY(file_id_2) REFERENCES files(id)
-            );
+                CREATE TABLE IF NOT EXISTS file_cooccurrence (
+                    file_id_1 INTEGER,
+                    file_id_2 INTEGER,
+                    co_count INTEGER DEFAULT 0,
+                    PRIMARY KEY (file_id_1, file_id_2),
+                    FOREIGN KEY(file_id_1) REFERENCES files(id),
+                    FOREIGN KEY(file_id_2) REFERENCES files(id)
+                );
 
-            CREATE INDEX IF NOT EXISTS idx_file_activity_access ON file_activity(last_accessed);
-            CREATE INDEX IF NOT EXISTS idx_cooccurrence_counts ON file_cooccurrence(co_count);
-        """)
-        logging.info("Activity tables verified")
+                CREATE INDEX IF NOT EXISTS idx_file_activity_access ON file_activity(last_accessed);
+                CREATE INDEX IF NOT EXISTS idx_cooccurrence_counts ON file_cooccurrence(co_count);
+            """)
+            logging.info("Activity tables verified")
+            return True
+    except Exception as e:
+        logging.error(f"Failed to create activity tables: {e}", exc_info=True)
+        return False
 
 def init_db(force: bool = False):
     """Initialize SQLite database with required tables."""
-    if force:
-        try:
-            DB_PATH.unlink(missing_ok=True)
-        except Exception as e:
-            logging.error(f"Failed to remove existing database: {e}")
-    
-    DB_PATH.parent.mkdir(exist_ok=True)
-    
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("PRAGMA journal_mode=WAL;")
-        c.executescript("""
-        PRAGMA foreign_keys = ON;
+    try:
+        DB_PATH.parent.mkdir(exist_ok=True)
         
-        CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY,
-            path TEXT UNIQUE NOT NULL,
-            hash TEXT NOT NULL,
-            file_type TEXT NOT NULL,
-            last_modified DATETIME NOT NULL,
-            last_scanned DATETIME NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
+        if force and DB_PATH.exists():
+            try:
+                DB_PATH.unlink()
+                logging.info("Deleted existing database")
+            except Exception as e:
+                logging.error(f"Failed to delete existing database: {e}")
         
-        CREATE TABLE IF NOT EXISTS file_content (
-            file_id INTEGER PRIMARY KEY,
-            content_preview TEXT,
-            embedding_vector BLOB,
-            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
-        );
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Core tables
+            cursor.executescript("""
+            PRAGMA foreign_keys = ON;
+            
+            CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY,
+                path TEXT UNIQUE NOT NULL,
+                hash TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                last_modified DATETIME NOT NULL,
+                last_scanned DATETIME NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS file_content (
+                file_id INTEGER PRIMARY KEY,
+                content_preview TEXT,
+                embedding_vector BLOB,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
+            CREATE INDEX IF NOT EXISTS idx_files_type ON files(file_type);
+            """)
+            
+            logging.info("Core tables created successfully")
         
-        CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
-        CREATE INDEX IF NOT EXISTS idx_files_type ON files(file_type);
-        """)
-        
-        # Add activity tables
-        ensure_tables()
+        # Create activity tables
+        if not ensure_tables():
+            raise RuntimeError("Failed to create activity tables")
         
         logging.info("Database initialized successfully")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Database initialization failed: {e}", exc_info=True)
+        raise RuntimeError(f"Database initialization failed: {e}")
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    try:
+        init_db(force=True)
+        logging.info("Database ready")
+    except Exception as e:
+        logging.error(f"Failed to initialize database: {e}")
+        exit(1)

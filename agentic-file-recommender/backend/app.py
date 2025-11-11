@@ -38,12 +38,24 @@ except Exception as e:
     raise RuntimeError(f"Failed to load config: {e}")
 
 # Initialize database if needed
-if not is_db_initialized():
-    try:
+try:
+    if not is_db_initialized():
+        logging.info("Database not initialized, initializing now...")
         init_db()
-    except Exception as e:
-        logging.error(f"Failed to initialize database: {e}")
-        raise RuntimeError("Database initialization failed")
+        logging.info("Database initialized successfully")
+    else:
+        logging.info("Database already initialized")
+except RuntimeError as e:
+    logging.error(f"Failed to initialize database: {e}")
+    logging.info("Attempting to reinitialize database...")
+    try:
+        init_db(force=True)
+    except Exception as e2:
+        logging.error(f"Database reinitialization failed: {e2}", exc_info=True)
+        raise
+except Exception as e:
+    logging.error(f"Unexpected error during database initialization: {e}", exc_info=True)
+    raise
 
 # Initialize agents
 recommendation_agent = RecommendationAgent(config)

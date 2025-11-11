@@ -118,26 +118,59 @@ class RecommendationAgent:
         return self.model.encode(text, show_progress_bar=False)
     
     async def _get_recency_score(self, file_path: str) -> float:
-        """Compute recency score (0-1) based on last_modified timestamp."""
+        """Compute recency score (0-1) using both modification and access times."""
         try:
             with get_db() as conn:
-                conn.row_factory = sqlite3.Row  # Enable dictionary access
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT last_modified FROM files WHERE path = ?", 
-                    (str(file_path),)
-                )
+                
+                # Get both modification time and last access time
+                cursor.execute("""
+                    SELECT f.last_modified, fa.last_accessed
+                    FROM files f
+                    LEFT JOIN file_activity fa ON f.id = fa.file_id
+                    WHERE f.path = ?
+                """, (str(file_path),))
+                
                 result = cursor.fetchone()
                 if not result:
                     return 0.0
                 
-                # Access as index since fetchone returns a tuple
-                last_modified = datetime.fromisoformat(result[0])
                 now = datetime.now()
-                days_old = (now - last_modified).days
                 
-                # Exponential decay over 30 days
-                return max(0.0, min(1.0, math.exp(-days_old / 30)))
+                # Calculate modification recency score
+                try:
+                    last_modified = datetime.fromisoformat(result['last_modified'])
+                    days_since_modified = (now - last_modified).days
+                    modification_score = max(0.0, min(1.0, math.exp(-days_since_modified / 30)))
+                except (TypeError, ValueError):
+                    modification_score = 0.0
+                
+                # Calculate access recency score
+                access_score = 0.0
+                if result['last_accessed']:
+                    try:
+                        last_accessed = datetime.fromisoformat(result['last_accessed'])
+                        days_since_accessed = (now - last_accessed).days
+                        # Faster decay for access (15-day half-life vs 30-day for modification)
+                        access_score = max(0.0, min(1.0, math.exp(-days_since_accessed / 15)))
+                    except (TypeError, ValueError):
+                        access_score = 0.0
+                
+                # Combine scores: give more weight to recent access (60%) than modification (40%)
+                # Recent access reflects current user interest
+                # Recent modification reflects content freshness
+                combined_score = (0.4 * modification_score) + (0.6 * access_score)
+                
+                logging.debug(
+                    f"Recency for {file_path}: "
+                    f"modification={modification_score:.3f}, "
+                    f"access={access_score:.3f}, "
+                    f"combined={combined_score:.3f}"
+                )
+                
+                return combined_score
+                
         except Exception as e:
             logging.error(f"Error computing recency score for {file_path}: {e}", exc_info=True)
             return 0.0
@@ -146,39 +179,61 @@ class RecommendationAgent:
         """Compute co-occurrence score (0-1) based on file access patterns."""
         try:
             with get_db() as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
+                
+                # Get file IDs
+                cursor.execute("SELECT id FROM files WHERE path = ?", (str(query_path),))
+                query_result = cursor.fetchone()
+                
+                cursor.execute("SELECT id FROM files WHERE path = ?", (str(candidate_path),))
+                candidate_result = cursor.fetchone()
+                
+                if not query_result or not candidate_result:
+                    logging.warning(f"File not found in database")
+                    return -1.0  # No co-occurrence possible if files not in DB
+                
+                query_id = query_result[0]
+                candidate_id = candidate_result[0]
+                
                 # Check if activity_logs table exists
                 cursor.execute("""
                     SELECT name FROM sqlite_master 
-                    WHERE type='table' AND name='activity_logs'
+                    WHERE type='table' AND name='file_cooccurrence'
                 """)
                 if not cursor.fetchone():
-                    # Placeholder: return small random value for variety
-                    return random.uniform(0.1, 0.3)
+                    logging.debug("file_cooccurrence table does not exist")
+                    return -1.0  # No co-occurrence data available
                 
-                # Get co-occurrence count within 1-hour windows
+                # Query actual co-occurrence count
                 cursor.execute("""
-                    WITH file_times AS (
-                        SELECT DISTINCT 
-                            strftime('%Y-%m-%d %H', timestamp) as hour_window,
-                            file_id
-                        FROM activity_logs
-                    )
-                    SELECT COUNT(*) as cooccur
-                    FROM file_times t1
-                    JOIN file_times t2 ON t1.hour_window = t2.hour_window
-                    JOIN files f1 ON t1.file_id = f1.id
-                    JOIN files f2 ON t2.file_id = f2.id
-                    WHERE f1.path = ? AND f2.path = ?
-                """, (str(query_path), str(candidate_path)))
+                    SELECT co_count FROM file_cooccurrence
+                    WHERE (file_id_1 = ? AND file_id_2 = ?)
+                       OR (file_id_1 = ? AND file_id_2 = ?)
+                """, (query_id, candidate_id, candidate_id, query_id))
                 
-                cooccur = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                
+                # If no co-occurrence found, return negative score
+                if not result or result[0] is None:
+                    logging.debug(f"No co-occurrence between {query_path} and {candidate_path}")
+                    return -1.0  # Never accessed together
+                
+                cooccur = result[0]
+                
                 # Normalize using sigmoid function
-                return 2 / (1 + math.exp(-cooccur / 5)) - 1
+                cooccurrence_score = 2 / (1 + math.exp(-cooccur / 5)) - 1
+                
+                logging.debug(
+                    f"Co-occurrence for ({query_path}, {candidate_path}): "
+                    f"co_count={cooccur}, score={cooccurrence_score:.3f}"
+                )
+                
+                return cooccurrence_score
                 
         except Exception as e:
-            logging.error(f"Error computing co-occurrence score: {e}")
-            return 0.0
+            logging.error(f"Error computing co-occurrence score: {e}", exc_info=True)
+            return -1.0
 
     async def recommend_similar(self, query_path: str, limit: int = 5) -> List[Dict]:
         """Find similar files using weighted multi-factor ranking."""

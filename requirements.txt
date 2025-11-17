@@ -1,0 +1,10 @@
+# ...existing packages...
+fastapi>=0.68.0
+uvicorn>=0.15.0
+sentence-transformers>=2.2.2
+torch>=2.2.0
+annoy>=1.17.0
+pyyaml>=5.4.1
+python-multipart>=0.0.5
+chardet>=4.0.0
+pydantic>=2.0.0

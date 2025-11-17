@@ -238,9 +238,31 @@ class RecommendationAgent:
     async def recommend_similar(self, query_path: str, limit: int = 5) -> List[Dict]:
         """Find similar files using weighted multi-factor ranking."""
         try:
+            # try to extract text from file on disk first
             query_text = extract_text_snippet(Path(query_path))
             if not query_text:
-                logging.warning(f"No text content extracted from {query_path}")
+                # fallback: try to read stored preview from database
+                try:
+                    with get_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT fc.content_preview
+                            FROM files f
+                            JOIN file_content fc ON f.id = fc.file_id
+                            WHERE f.path = ?
+                        """, (str(query_path),))
+                        row = cursor.fetchone()
+                        if row:
+                            # accommodate sqlite returning tuple or Row
+                            preview = row[0] if isinstance(row, (tuple, list)) else row['content_preview'] if hasattr(row, '__getitem__') else None
+                            if preview:
+                                query_text = preview
+                                logging.info(f"Using stored content_preview for {query_path}")
+                except Exception as e:
+                    logging.warning(f"DB preview lookup failed for {query_path}: {e}")
+
+            if not query_text:
+                logging.warning(f"No text content available for {query_path}")
                 return []
 
             # Get ranking weights from config or use defaults
